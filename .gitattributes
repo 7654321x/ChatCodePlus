@@ -1,0 +1,2 @@
+# The launcher verifies this generated bundle byte-for-byte against its manifest.
+runtime/chatcodeplus.mjs -text whitespace=-trailing-space

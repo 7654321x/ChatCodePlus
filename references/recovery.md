@@ -19,9 +19,9 @@ OBSERVE → CLASSIFY → MINIMAL REPAIR → RETRY ORIGINAL FAILURE → VERIFY �
      `<chatcodeplus> bind -w <workspace> --json`, send that fresh capability to
      the same conversation, and retry `workspace_snapshot({ bind_code })`
      exactly once. On success, continue with no code and stop recovery.
-   - expired/rejected bind capability: run the same `bind` command for a fresh
-     capability and retry the original snapshot once, with no fallback
-     workspace.
+   - expired/rejected bind capability: first retry a no-code snapshot in the
+     same conversation. Success reuses the binding; only `WORKSPACE_NOT_BOUND`
+     permits a fresh capability and one binding retry, with no fallback workspace.
    - stale `workspace_snapshot` schema or missing ChatCodePlus tools: reconnect
      the same Connector/URL; re-pair only if its authorization page asks.
    - changed Quick Tunnel URL: update the existing Connector Server URL, reopen
@@ -38,13 +38,31 @@ doctor, Tunnel restart, or workspace registration.
 
 ## Connector invocation
 
+ChatCodePlus does not require Chat mode or Work mode. Workspace binding depends
+on the current conversation's available ChatCodePlus tools and its canonical
+binding, not a ChatGPT UI mode. If tools are unavailable, report that capability
+failure; do not infer or ask for a UI-mode change.
+
+Browser preparation is a best-effort Skill-executor action using available host
+tools, not a wired CLI/browser pipeline. Follow SKILL.md's `READY`/`NOT_READY`/
+`UNKNOWN` handling without changing the binding/recovery path. Reuse `READY`
+within the same continuous workflow and recheck only after direct evidence of
+host/browser invalidation or an environment switch. Browser state
+is never evidence of a conversation binding.
+
+An active task at `PLAN`, `EXECUTING`, `EXECUTED`, or `REVIEW` uses the `RESUME` control
+message without preflight, `workspace_snapshot()`, INIT, or a bind capability.
+Enter recovery only on direct evidence of a new conversation, different
+workspace, `WORKSPACE_NOT_BOUND`, or binding failure.
+
 Manual per-conversation selection/enablement is allowed only when direct
 evidence shows the INIT could not invoke ChatCodePlus: tools are absent, schema
 is stale, the product explicitly requires enablement, or no
 `workspace_snapshot` call followed the INIT. Then inspect/enable the existing
-Connector and retry the same reuse INIT; use a new-binding INIT only after an
-explicit `WORKSPACE_NOT_BOUND` result. Never make this normal onboarding, ask
-for a greeting, or create a duplicate Connector.
+Connector and retry the same reuse INIT; use a capability-bearing new-binding
+INIT directly when the target workspace is selected, or use it after an
+explicit `WORKSPACE_NOT_BOUND` result on the no-capability fallback. Never make
+this normal onboarding, ask for a greeting, or create a duplicate Connector.
 
 ## Network boundary
 
@@ -73,8 +91,14 @@ commit.
 If a confirmed old Gateway serves the fixed hostname, stop it and restart this
 runtime once; do not create another per-workspace service or Tunnel. Existing
 bindings persist across that restart. If a saved conversation is confirmed to
-have disappeared, create a new conversation, run `<chatcodeplus> bind -w
-<workspace> --json`, and use a fresh new-binding INIT.
+have disappeared, create a replacement conversation. When the target workspace
+is known, issue a fresh explicit capability and send a new-binding INIT directly;
+a preliminary no-capability check is not required. If no capability is
+available, send a no-capability check INIT and call `workspace_snapshot()`
+without a bind code first; success reuses its binding, while
+`WORKSPACE_NOT_BOUND` permits the bind command and a fresh new-binding INIT on
+that fallback path. Use protocol.md's reply reception contract; a timeout or
+unreadable reply is not a binding failure.
 
 ## Disconnect
 

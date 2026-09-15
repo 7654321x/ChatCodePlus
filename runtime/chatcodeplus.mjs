@@ -34816,7 +34816,7 @@ var import_express2 = __toESM(require_express2(), 1);
 import { randomBytes as randomBytes6 } from "node:crypto";
 
 // src/auth/store.ts
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes as randomBytes2, timingSafeEqual } from "node:crypto";
 import fs2 from "node:fs";
 import path2 from "node:path";
 
@@ -34824,6 +34824,7 @@ import path2 from "node:path";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 function getStateDir() {
   const override = process.env.CHATCODEPLUS_STATE_DIR;
   if (override && override.trim() !== "") return path.resolve(override);
@@ -34967,6 +34968,22 @@ function writeSecureJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2), { mode: 384 });
   ensurePrivateFile(file);
 }
+function writeSecureJsonAtomic(file, data) {
+  ensureDir(path.dirname(file));
+  const temporary = `${file}.${process.pid}.${Date.now()}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(data, null, 2), { mode: 384 });
+    ensurePrivateFile(temporary);
+    fs.renameSync(temporary, file);
+    ensurePrivateFile(file);
+  } catch (error2) {
+    try {
+      fs.rmSync(temporary, { force: true });
+    } catch {
+    }
+    throw error2;
+  }
+}
 function appendSecureText(file, text) {
   ensureDir(path.dirname(file));
   fs.appendFileSync(file, text, { mode: 384 });
@@ -35010,7 +35027,14 @@ function sha256hex(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 function newToken(prefix) {
-  return `${prefix}_${randomBytes(32).toString("base64url")}`;
+  return `${prefix}_${randomBytes2(32).toString("base64url")}`;
+}
+function newAuthorizationId() {
+  return `auth_${randomBytes2(16).toString("hex")}`;
+}
+function isoFromMillis(value) {
+  const date3 = new Date(value);
+  return Number.isNaN(date3.getTime()) ? (/* @__PURE__ */ new Date(0)).toISOString() : date3.toISOString();
 }
 function base64UrlSha256(value) {
   return createHash("sha256").update(value).digest("base64url");
@@ -35021,11 +35045,112 @@ function safeEqual(a, b) {
   if (bufA.length !== bufB.length) return false;
   return timingSafeEqual(bufA, bufB);
 }
+function recordValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+function parseClient(value) {
+  const record2 = recordValue(value);
+  if (!record2 || typeof record2.clientId !== "string" || record2.clientId.length === 0) return null;
+  if (!Array.isArray(record2.redirectUris) || !record2.redirectUris.every((uri) => typeof uri === "string")) return null;
+  return {
+    clientId: record2.clientId,
+    clientName: typeof record2.clientName === "string" ? record2.clientName : void 0,
+    redirectUris: [...record2.redirectUris],
+    createdAt: typeof record2.createdAt === "string" ? record2.createdAt : (/* @__PURE__ */ new Date(0)).toISOString()
+  };
+}
+function parseV2Token(value) {
+  const record2 = recordValue(value);
+  if (!record2 || typeof record2.hash !== "string" || record2.hash.length === 0 || record2.kind !== "access" && record2.kind !== "refresh" || typeof record2.clientId !== "string" || record2.clientId.length === 0 || !Array.isArray(record2.scopes) || !record2.scopes.every((scope) => typeof scope === "string") || record2.issuedAt !== void 0 && (typeof record2.issuedAt !== "number" || !Number.isFinite(record2.issuedAt)) || typeof record2.expiresAt !== "number" || !Number.isFinite(record2.expiresAt) || typeof record2.revoked !== "boolean") return null;
+  return {
+    hash: record2.hash,
+    kind: record2.kind,
+    clientId: record2.clientId,
+    scopes: [...record2.scopes],
+    ...record2.issuedAt !== void 0 ? { issuedAt: record2.issuedAt } : {},
+    expiresAt: record2.expiresAt,
+    revoked: record2.revoked
+  };
+}
+function parseV3Token(value) {
+  const record2 = recordValue(value);
+  const token = parseV2Token(value);
+  if (!token || !record2 || typeof record2.authorizationId !== "string" || record2.authorizationId.length === 0) return null;
+  return { ...token, authorizationId: record2.authorizationId };
+}
+function parseActiveAuthorization(value) {
+  if (value === null) return null;
+  const record2 = recordValue(value);
+  if (!record2 || typeof record2.id !== "string" || record2.id.length === 0 || typeof record2.clientId !== "string" || record2.clientId.length === 0 || typeof record2.activatedAt !== "string" || record2.activatedAt.length === 0) return void 0;
+  return { id: record2.id, clientId: record2.clientId, activatedAt: record2.activatedAt };
+}
+function scopesKey(scopes) {
+  return JSON.stringify([...new Set(scopes)].sort());
+}
+function isUnambiguousTokenSet(tokens) {
+  if (tokens.length === 0) return false;
+  const clientIds = new Set(tokens.map((token) => token.clientId));
+  if (clientIds.size !== 1) return false;
+  const accessCount = tokens.filter((token) => token.kind === "access").length;
+  const refreshCount = tokens.filter((token) => token.kind === "refresh").length;
+  if (accessCount > 1 || refreshCount > 1) return false;
+  return new Set(tokens.map((token) => scopesKey(token.scopes))).size === 1;
+}
+function selectLatestBatch(tokens, now) {
+  const valid = tokens.filter(
+    (token) => !token.revoked && token.expiresAt > now && token.issuedAt !== void 0
+  );
+  if (valid.length === 0) return null;
+  const issuedAt = Math.max(...valid.map((token) => token.issuedAt));
+  const batch = valid.filter((token) => token.issuedAt === issuedAt);
+  if (!isUnambiguousTokenSet(batch)) return null;
+  return { tokens: batch, clientId: batch[0].clientId, issuedAt };
+}
+function migratedState(clients, tokens, now) {
+  const valid = tokens.filter((token) => !token.revoked && token.expiresAt > now);
+  if (valid.length === 0) {
+    return { version: 3, scope: "machine", clients, activeAuthorization: null, tokens: [] };
+  }
+  const hasKnownAndUnknownTimestamps = valid.some((token) => token.issuedAt === void 0) && valid.some((token) => token.issuedAt !== void 0);
+  let selected;
+  let activatedAt;
+  if (hasKnownAndUnknownTimestamps) {
+    return { version: 3, scope: "machine", clients, activeAuthorization: null, tokens: [] };
+  }
+  const latest = selectLatestBatch(valid, now);
+  if (latest) {
+    selected = latest.tokens;
+    activatedAt = isoFromMillis(latest.issuedAt);
+  } else if (valid.every((token) => token.issuedAt === void 0) && isUnambiguousTokenSet(valid)) {
+    selected = valid;
+    activatedAt = new Date(now).toISOString();
+  } else {
+    return { version: 3, scope: "machine", clients, activeAuthorization: null, tokens: [] };
+  }
+  const selectedClientId = selected[0].clientId;
+  const registeredClientIds = new Set(clients.map((client) => client.clientId));
+  if (!registeredClientIds.has(selectedClientId)) {
+    return { version: 3, scope: "machine", clients, activeAuthorization: null, tokens: [] };
+  }
+  const activeAuthorization = {
+    id: newAuthorizationId(),
+    clientId: selectedClientId,
+    activatedAt
+  };
+  return {
+    version: 3,
+    scope: "machine",
+    clients,
+    activeAuthorization,
+    tokens: selected.map((token) => ({ ...token, authorizationId: activeAuthorization.id }))
+  };
+}
 var AuthStore = class {
   clients = /* @__PURE__ */ new Map();
   tokens = /* @__PURE__ */ new Map();
   authCodes = /* @__PURE__ */ new Map();
   file;
+  activeAuthorization = null;
   corruption = null;
   constructor(opts = {}) {
     const explicitFile = Boolean(opts.file);
@@ -35035,114 +35160,183 @@ var AuthStore = class {
   }
   load() {
     if (!fs2.existsSync(this.file)) return;
-    let data;
+    let parsed;
     try {
-      data = JSON.parse(fs2.readFileSync(this.file, "utf8"));
+      parsed = JSON.parse(fs2.readFileSync(this.file, "utf8"));
     } catch (error2) {
       this.corruption = `Cannot parse machine authorization state: ${error2 instanceof Error ? error2.message : String(error2)}`;
       return;
     }
-    if (!data || data.version !== 2 || data.scope !== "machine" || !Array.isArray(data.clients) || !Array.isArray(data.tokens)) {
-      this.corruption = "Machine authorization state has an unsupported schema";
-      return;
+    try {
+      const record2 = recordValue(parsed);
+      if (!record2 || record2.scope !== "machine" || !Array.isArray(record2.clients) || !Array.isArray(record2.tokens)) {
+        throw new Error("Machine authorization state has an unsupported schema");
+      }
+      const clients = record2.clients.map(parseClient);
+      if (clients.some((client) => client === null)) throw new Error("Machine authorization state contains an invalid client");
+      if (record2.version === 2) {
+        const tokens2 = record2.tokens.map(parseV2Token);
+        if (tokens2.some((token) => token === null)) throw new Error("Machine authorization state contains an invalid token");
+        const next = migratedState(clients, tokens2, Date.now());
+        try {
+          this.validateRelations(next);
+          writeSecureJsonAtomic(this.file, next);
+        } catch {
+          this.corruption = "Machine authorization state migration failed; the original state was preserved.";
+          return;
+        }
+        this.loadState(next);
+        return;
+      }
+      if (record2.version !== 3) throw new Error("Machine authorization state has an unsupported schema");
+      const activeAuthorization = parseActiveAuthorization(record2.activeAuthorization);
+      if (activeAuthorization === void 0) throw new Error("Machine authorization state has an invalid active authorization");
+      const tokens = record2.tokens.map(parseV3Token);
+      if (tokens.some((token) => token === null)) throw new Error("Machine authorization state contains an invalid token");
+      const state = {
+        version: 3,
+        scope: "machine",
+        clients,
+        activeAuthorization,
+        tokens
+      };
+      this.validateRelations(state);
+      this.loadState(state);
+    } catch (error2) {
+      this.corruption = error2 instanceof Error ? error2.message : String(error2);
     }
-    const now = Date.now();
-    for (const client of data.clients ?? []) {
-      if (client && typeof client.clientId === "string" && Array.isArray(client.redirectUris)) {
-        this.clients.set(client.clientId, {
-          clientId: client.clientId,
-          clientName: typeof client.clientName === "string" ? client.clientName : void 0,
-          redirectUris: client.redirectUris.filter((uri) => typeof uri === "string"),
-          createdAt: typeof client.createdAt === "string" ? client.createdAt : (/* @__PURE__ */ new Date(0)).toISOString()
-        });
+  }
+  validateRelations(state) {
+    const clientIds = new Set(state.clients.map((client) => client.clientId));
+    if (state.activeAuthorization && !clientIds.has(state.activeAuthorization.clientId)) {
+      throw new Error("Machine authorization references an unregistered client");
+    }
+    const tokenHashes = /* @__PURE__ */ new Set();
+    for (const token of state.tokens) {
+      if (tokenHashes.has(token.hash)) throw new Error("Machine authorization state contains duplicate token records");
+      tokenHashes.add(token.hash);
+      if (state.activeAuthorization && token.authorizationId === state.activeAuthorization.id && token.clientId !== state.activeAuthorization.clientId) {
+        throw new Error("Machine authorization token client does not match the active authorization");
       }
     }
-    for (const token of data.tokens ?? []) {
-      if (token && typeof token.hash === "string" && (token.kind === "access" || token.kind === "refresh") && typeof token.clientId === "string" && Array.isArray(token.scopes) && typeof token.issuedAt === "number" && typeof token.expiresAt === "number" && typeof token.revoked === "boolean" && !token.revoked && token.expiresAt > now) {
+  }
+  loadState(state) {
+    this.clients.clear();
+    this.tokens.clear();
+    this.activeAuthorization = state.activeAuthorization ? { ...state.activeAuthorization } : null;
+    for (const client of state.clients) this.clients.set(client.clientId, { ...client, redirectUris: [...client.redirectUris] });
+    const now = Date.now();
+    if (!this.activeAuthorization) return;
+    for (const token of state.tokens) {
+      if (token.authorizationId === this.activeAuthorization.id && token.clientId === this.activeAuthorization.clientId && !token.revoked && token.expiresAt > now) {
         this.tokens.set(token.hash, {
-          hash: token.hash,
-          kind: token.kind,
-          clientId: token.clientId,
-          scopes: token.scopes.filter((scope) => typeof scope === "string"),
-          issuedAt: token.issuedAt,
-          expiresAt: token.expiresAt,
+          ...token,
+          ...token.issuedAt !== void 0 ? { issuedAt: token.issuedAt } : {},
+          scopes: [...token.scopes],
           revoked: false
         });
       }
     }
   }
-  save() {
-    this.assertWritable();
+  buildState(clients, tokens, activeAuthorization) {
     const now = Date.now();
-    const state = {
-      version: 2,
+    return {
+      version: 3,
       scope: "machine",
-      clients: [...this.clients.values()],
-      tokens: [...this.tokens.values()].filter((token) => !token.revoked && token.expiresAt > now)
+      clients: [...clients].map((client) => ({ ...client, redirectUris: [...client.redirectUris] })),
+      activeAuthorization: activeAuthorization ? { ...activeAuthorization } : null,
+      tokens: [...tokens].filter((token) => activeAuthorization !== null && token.authorizationId === activeAuthorization.id && token.clientId === activeAuthorization.clientId && !token.revoked && token.expiresAt > now).map((token) => ({
+        ...token,
+        ...token.issuedAt !== void 0 ? { issuedAt: token.issuedAt } : {},
+        scopes: [...token.scopes],
+        revoked: false
+      }))
     };
-    writeSecureJson(this.file, state);
+  }
+  /** Commit exactly the already-filtered state that was written to disk. */
+  commitState(state) {
+    this.clients.clear();
+    for (const client of state.clients) {
+      this.clients.set(client.clientId, { ...client, redirectUris: [...client.redirectUris] });
+    }
+    this.tokens.clear();
+    for (const token of state.tokens) {
+      this.tokens.set(token.hash, {
+        ...token,
+        ...token.issuedAt !== void 0 ? { issuedAt: token.issuedAt } : {},
+        scopes: [...token.scopes],
+        revoked: false
+      });
+    }
+    this.activeAuthorization = state.activeAuthorization ? { ...state.activeAuthorization } : null;
+  }
+  persistAndCommit(clients, tokens, activeAuthorization) {
+    this.assertWritable();
+    const state = this.buildState(clients.values(), tokens.values(), activeAuthorization);
+    writeSecureJsonAtomic(this.file, state);
+    this.commitState(state);
   }
   /** Refuse every OAuth mutation while the persisted state is known corrupt. */
   assertWritable() {
     if (this.corruption) throw new AuthStoreCorruptError(this.corruption);
   }
-  /** Import valid records from old per-workspace files once, without deleting them. */
+  /** Import valid records from old per-workspace files once, without retaining workspace policy. */
   importLegacyStores() {
     const authDir = path2.join(getLegacyStateDir(), "auth");
     if (!fs2.existsSync(authDir)) return;
     const clients = /* @__PURE__ */ new Map();
-    const tokens = /* @__PURE__ */ new Map();
+    const tokens = [];
     const now = Date.now();
     for (const entry of fs2.readdirSync(authDir, { withFileTypes: true })) {
       if (!entry.isFile() || entry.name === "machine.json" || !entry.name.endsWith(".json")) continue;
       const legacy = readJsonIfExists(path2.join(authDir, entry.name));
       if (!legacy) continue;
-      for (const client of legacy.clients ?? []) {
-        if (client && typeof client.clientId === "string" && Array.isArray(client.redirectUris)) {
-          clients.set(client.clientId, {
-            clientId: client.clientId,
-            clientName: typeof client.clientName === "string" ? client.clientName : void 0,
-            redirectUris: client.redirectUris.filter((uri) => typeof uri === "string"),
-            createdAt: typeof client.createdAt === "string" ? client.createdAt : (/* @__PURE__ */ new Date(0)).toISOString()
-          });
-        }
+      for (const candidate of legacy.clients ?? []) {
+        const client = parseClient(candidate);
+        if (client) clients.set(client.clientId, client);
       }
-      for (const token of legacy.tokens ?? []) {
-        if (token && typeof token.hash === "string" && (token.kind === "access" || token.kind === "refresh") && typeof token.clientId === "string" && Array.isArray(token.scopes) && typeof token.expiresAt === "number" && token.expiresAt > now && !token.revoked) {
-          tokens.set(token.hash, {
-            hash: token.hash,
-            kind: token.kind,
-            clientId: token.clientId,
-            scopes: token.scopes.filter((scope) => typeof scope === "string"),
-            issuedAt: typeof token.issuedAt === "number" ? token.issuedAt : now,
-            expiresAt: token.expiresAt,
-            revoked: false
-          });
-        }
+      for (const candidate of legacy.tokens ?? []) {
+        const record2 = recordValue(candidate);
+        if (!record2 || typeof record2.hash !== "string" || record2.hash.length === 0 || record2.kind !== "access" && record2.kind !== "refresh" || typeof record2.clientId !== "string" || record2.clientId.length === 0 || !Array.isArray(record2.scopes) || !record2.scopes.every((scope) => typeof scope === "string") || typeof record2.expiresAt !== "number" || !Number.isFinite(record2.expiresAt) || record2.expiresAt <= now || record2.revoked === true) continue;
+        tokens.push({
+          hash: record2.hash,
+          kind: record2.kind,
+          clientId: record2.clientId,
+          scopes: [...record2.scopes],
+          ...typeof record2.issuedAt === "number" && Number.isFinite(record2.issuedAt) ? { issuedAt: record2.issuedAt } : {},
+          expiresAt: record2.expiresAt,
+          revoked: false
+        });
       }
     }
-    if (clients.size === 0 && tokens.size === 0) return;
-    writeSecureJson(this.file, {
-      version: 2,
-      scope: "machine",
-      clients: [...clients.values()],
-      tokens: [...tokens.values()]
-    });
+    if (clients.size === 0 && tokens.length === 0) return;
+    try {
+      const next = migratedState([...clients.values()], tokens, now);
+      this.validateRelations(next);
+      writeSecureJsonAtomic(this.file, next);
+    } catch {
+      this.corruption = "Machine authorization state import failed; legacy state was preserved.";
+    }
   }
   registerClient(input) {
     this.assertWritable();
     const client = {
-      clientId: `chatcodeplus_client_${randomBytes(12).toString("base64url")}`,
+      clientId: `chatcodeplus_client_${randomBytes2(12).toString("base64url")}`,
       clientName: input.clientName,
       redirectUris: [...input.redirectUris],
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     };
-    this.clients.set(client.clientId, client);
-    this.save();
-    return client;
+    const clients = new Map(this.clients);
+    clients.set(client.clientId, client);
+    this.persistAndCommit(clients, new Map(this.tokens), this.activeAuthorization);
+    return { ...client, redirectUris: [...client.redirectUris] };
   }
   getClient(clientId) {
-    return this.clients.get(clientId);
+    const client = this.clients.get(clientId);
+    return client ? { ...client, redirectUris: [...client.redirectUris] } : void 0;
+  }
+  getActiveAuthorization() {
+    return this.activeAuthorization ? { ...this.activeAuthorization } : null;
   }
   createAuthorizationCode(input) {
     this.assertWritable();
@@ -35163,83 +35357,126 @@ var AuthStore = class {
     const record2 = this.authCodes.get(code);
     if (!record2) return null;
     this.authCodes.delete(code);
-    return Date.now() <= record2.expiresAt ? record2 : null;
+    return Date.now() <= record2.expiresAt ? { ...record2, scopes: [...record2.scopes] } : null;
   }
-  issueTokens(input) {
+  /** Activate a successful authorization-code exchange as the sole current authorization. */
+  activateAuthorization(input) {
     this.assertWritable();
+    if (!this.clients.has(input.clientId)) {
+      throw new Error("OAuth client is not registered");
+    }
     const now = Date.now();
-    const accessTtl = input.accessTtlMs ?? ACCESS_TOKEN_TTL_MS;
+    const authorization = {
+      id: newAuthorizationId(),
+      clientId: input.clientId,
+      activatedAt: new Date(now).toISOString()
+    };
+    const issued = this.createTokenPair({
+      clientId: input.clientId,
+      scopes: input.scopes,
+      accessTtlMs: input.accessTtlMs,
+      authorizationId: authorization.id,
+      now
+    });
+    const tokens = /* @__PURE__ */ new Map();
+    for (const token of issued.records) tokens.set(token.hash, token);
+    this.persistAndCommit(new Map(this.clients), tokens, authorization);
+    return issued.response;
+  }
+  createTokenPair(input) {
     const scopes = [...input.scopes];
     const accessToken = newToken("chatcodeplus_at");
-    this.tokens.set(sha256hex(accessToken), {
-      hash: sha256hex(accessToken),
+    const accessHash = sha256hex(accessToken);
+    const accessTtl = input.accessTtlMs ?? ACCESS_TOKEN_TTL_MS;
+    const records = [{
+      hash: accessHash,
       kind: "access",
       clientId: input.clientId,
+      authorizationId: input.authorizationId,
       scopes,
-      issuedAt: now,
-      expiresAt: now + accessTtl,
+      issuedAt: input.now,
+      expiresAt: input.now + accessTtl,
       revoked: false
-    });
+    }];
     let refreshToken = null;
     if (scopes.includes("offline_access")) {
       refreshToken = newToken("chatcodeplus_rt");
-      this.tokens.set(sha256hex(refreshToken), {
+      records.push({
         hash: sha256hex(refreshToken),
         kind: "refresh",
         clientId: input.clientId,
+        authorizationId: input.authorizationId,
         scopes,
-        issuedAt: now,
-        expiresAt: now + REFRESH_TOKEN_TTL_MS,
+        issuedAt: input.now,
+        expiresAt: input.now + REFRESH_TOKEN_TTL_MS,
         revoked: false
       });
     }
-    this.save();
-    return { accessToken, refreshToken, expiresIn: Math.floor(accessTtl / 1e3), scopes };
+    return {
+      records,
+      response: {
+        accessToken,
+        refreshToken,
+        expiresIn: Math.floor(accessTtl / 1e3),
+        scopes
+      }
+    };
   }
   verifyAccessToken(token) {
     const record2 = this.tokens.get(sha256hex(token));
     if (!record2) return { ok: false, reason: "unknown" };
     if (record2.kind !== "access") return { ok: false, reason: "wrong_kind" };
+    if (!this.activeAuthorization || record2.authorizationId !== this.activeAuthorization.id) {
+      return { ok: false, reason: "revoked" };
+    }
     if (record2.revoked) return { ok: false, reason: "revoked" };
     if (Date.now() > record2.expiresAt) return { ok: false, reason: "expired" };
-    return { ok: true, record: record2 };
+    return { ok: true, record: { ...record2, scopes: [...record2.scopes] } };
   }
+  /** Rotate a refresh token within the current authorization generation. */
   refresh(refreshToken, clientId) {
     this.assertWritable();
     const record2 = this.tokens.get(sha256hex(refreshToken));
-    if (!record2 || record2.kind !== "refresh" || record2.revoked || Date.now() > record2.expiresAt) {
-      return { ok: false, reason: "invalid_grant" };
-    }
+    if (!record2 || record2.kind !== "refresh" || record2.revoked || !this.activeAuthorization || record2.authorizationId !== this.activeAuthorization.id || Date.now() > record2.expiresAt) return { ok: false, reason: "invalid_grant" };
     if (record2.clientId !== clientId) return { ok: false, reason: "invalid_client" };
-    record2.revoked = true;
-    this.tokens.delete(record2.hash);
-    return { ok: true, tokens: this.issueTokens({ clientId, scopes: record2.scopes }) };
+    const now = Date.now();
+    const issued = this.createTokenPair({
+      clientId,
+      scopes: record2.scopes,
+      authorizationId: this.activeAuthorization.id,
+      now
+    });
+    const tokens = /* @__PURE__ */ new Map();
+    for (const token of this.tokens.values()) {
+      if (!token.revoked && token.expiresAt > now && token.hash !== record2.hash) tokens.set(token.hash, { ...token });
+    }
+    for (const token of issued.records) tokens.set(token.hash, token);
+    this.persistAndCommit(new Map(this.clients), tokens, this.activeAuthorization);
+    return { ok: true, tokens: issued.response };
   }
   revokeToken(token) {
     this.assertWritable();
     const record2 = this.tokens.get(sha256hex(token));
     if (!record2) return false;
-    record2.revoked = true;
-    this.tokens.delete(record2.hash);
-    this.save();
+    const tokens = new Map(this.tokens);
+    tokens.delete(record2.hash);
+    this.persistAndCommit(new Map(this.clients), tokens, this.activeAuthorization);
     return true;
   }
   revokeAll() {
     this.assertWritable();
     const count = this.tokens.size;
-    this.tokens.clear();
+    this.persistAndCommit(new Map(this.clients), /* @__PURE__ */ new Map(), null);
     this.authCodes.clear();
-    this.save();
     return count;
   }
   tokenCount() {
-    this.pruneExpiredTokens();
-    return this.tokens.size;
+    const now = Date.now();
+    return [...this.tokens.values()].filter(
+      (token) => !token.revoked && token.expiresAt > now && token.authorizationId === this.activeAuthorization?.id
+    ).length;
   }
-  /**
-   * Return the current authorization posture, rather than treating stored
-   * record count as proof that ChatGPT can still renew an OAuth session.
-   */
+  /** Return the current authorization posture without changing persisted state. */
   authorizationStatus() {
     if (this.corruption) {
       return {
@@ -35251,10 +35488,9 @@ var AuthStore = class {
         repairDetail: this.corruption
       };
     }
-    this.pruneExpiredTokens();
     const now = Date.now();
     const validTokens = [...this.tokens.values()].filter(
-      (token) => !token.revoked && token.expiresAt > now
+      (token) => !token.revoked && token.expiresAt > now && token.authorizationId === this.activeAuthorization?.id
     );
     const accessTokens = validTokens.filter((token) => token.kind === "access");
     const refreshTokens = validTokens.filter((token) => token.kind === "refresh");
@@ -35269,18 +35505,6 @@ var AuthStore = class {
       ...nextRefreshExpiry ? { nextRefreshExpiry } : {}
     };
   }
-  /** Remove expired or revoked in-memory records before reporting status. */
-  pruneExpiredTokens() {
-    const now = Date.now();
-    let changed = false;
-    for (const [hash2, token] of this.tokens) {
-      if (token.revoked || token.expiresAt <= now) {
-        this.tokens.delete(hash2);
-        changed = true;
-      }
-    }
-    if (changed) this.save();
-  }
 };
 function filterScopes(requested) {
   if (!requested || requested.trim() === "") return [...SUPPORTED_SCOPES];
@@ -35291,7 +35515,7 @@ function filterScopes(requested) {
 
 // src/auth/oauth.ts
 var import_express = __toESM(require_express2(), 1);
-import { randomBytes as randomBytes2 } from "node:crypto";
+import { randomBytes as randomBytes3 } from "node:crypto";
 
 // src/version.ts
 var VERSION = "0.1.0";
@@ -35466,7 +35690,7 @@ function createOAuthRouter(deps) {
     }
     const scopes = filterScopes(query.scope);
     const request = {
-      id: randomBytes2(16).toString("hex"),
+      id: randomBytes3(16).toString("hex"),
       clientId: client.clientId,
       redirectUri,
       scopes,
@@ -35543,7 +35767,16 @@ function createOAuthRouter(deps) {
         res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed" });
         return;
       }
-      const tokens = deps.store.issueTokens({ clientId, scopes: record2.scopes });
+      let tokens;
+      try {
+        tokens = deps.store.activateAuthorization({ clientId, scopes: record2.scopes });
+      } catch {
+        deps.logger.error("OAuth authorization activation persistence failed", {
+          event: "oauth_authorization_activation_failed"
+        });
+        res.status(500).json({ error: "server_error" });
+        return;
+      }
       deps.logger.info(`Issued access token for client ${clientId}`);
       res.set("Cache-Control", "no-store").set("Pragma", "no-cache").json({
         access_token: tokens.accessToken,
@@ -35560,7 +35793,14 @@ function createOAuthRouter(deps) {
         res.status(400).json({ error: "invalid_request" });
         return;
       }
-      const result = deps.store.refresh(refreshToken, clientId);
+      let result;
+      try {
+        result = deps.store.refresh(refreshToken, clientId);
+      } catch {
+        deps.logger.error("OAuth refresh persistence failed", { event: "oauth_refresh_failed" });
+        res.status(500).json({ error: "server_error" });
+        return;
+      }
       if (!result.ok) {
         res.status(400).json({ error: result.reason });
         return;
@@ -35617,12 +35857,12 @@ function bearerAuth(deps) {
 }
 
 // src/pairing/manager.ts
-import { createHash as createHash2, randomBytes as randomBytes3, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash2, randomBytes as randomBytes4, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 var ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 function generateCode(length = 8) {
   const chars = [];
   while (chars.length < length) {
-    const bytes = randomBytes3(length * 2);
+    const bytes = randomBytes4(length * 2);
     for (const byte of bytes) {
       if (byte < Math.floor(256 / ALPHABET.length) * ALPHABET.length) {
         chars.push(ALPHABET[byte % ALPHABET.length]);
@@ -35661,7 +35901,7 @@ var PairingManager = class {
     this.sessions.clear();
     const raw = generateCode();
     const session2 = {
-      id: randomBytes3(16).toString("hex"),
+      id: randomBytes4(16).toString("hex"),
       codeHash: hashCode(raw),
       createdAt: Date.now(),
       expiresAt: Date.now() + this.ttlMs,
@@ -35728,7 +35968,7 @@ var PairingManager = class {
 };
 
 // src/conversation/bind-codes.ts
-import { createHash as createHash3, randomBytes as randomBytes4, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { createHash as createHash3, randomBytes as randomBytes5, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 var ALPHABET2 = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 function normalize(code) {
   return code.toUpperCase().replace(/[^A-Z2-9]/g, "");
@@ -35739,7 +35979,7 @@ function hash(code) {
 function generateRaw(length = 8) {
   const chars = [];
   while (chars.length < length) {
-    for (const byte of randomBytes4(length * 2)) {
+    for (const byte of randomBytes5(length * 2)) {
       const limit = Math.floor(256 / ALPHABET2.length) * ALPHABET2.length;
       if (byte >= limit) continue;
       chars.push(ALPHABET2[byte % ALPHABET2.length]);
@@ -35765,7 +36005,7 @@ var BindCodeManager = class {
     }
     this.prune();
     const raw = generateRaw();
-    const id = randomBytes4(16).toString("hex");
+    const id = randomBytes5(16).toString("hex");
     const expiresAt = Date.now() + this.ttlMs;
     this.active.set(id, { id, workspaceId, expiresAt, codeHash: hash(raw) });
     return { id, workspaceId, expiresAt, code: formatBindCode(raw) };
@@ -35879,7 +36119,7 @@ var BindCodeManager = class {
 };
 
 // src/conversation/bindings.ts
-import { createHash as createHash4, randomBytes as randomBytes5 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import fs3 from "node:fs";
 import path3 from "node:path";
 var ConversationBindingError = class extends Error {
@@ -35928,7 +36168,7 @@ function readPersisted(file) {
     throw new ConversationBindingError("CONVERSATION_BINDINGS_CORRUPT", "Conversation binding store must be an object.");
   }
   const value = parsed;
-  if (value.version !== 1 || !Array.isArray(value.bindings)) {
+  if (value.version !== 1 && value.version !== 2 || !Array.isArray(value.bindings)) {
     throw new ConversationBindingError("CONVERSATION_BINDINGS_CORRUPT", "Unsupported conversation binding format.");
   }
   const seen = /* @__PURE__ */ new Set();
@@ -35938,17 +36178,18 @@ function readPersisted(file) {
       throw new ConversationBindingError("CONVERSATION_BINDINGS_CORRUPT", "Conversation binding store contains an invalid entry.");
     }
     const entry = candidate;
-    if (typeof entry.conversationKey !== "string" || !/^[a-f0-9]{64}$/.test(entry.conversationKey) || typeof entry.workspaceId !== "string" || entry.workspaceId.length === 0 || typeof entry.createdAt !== "string" || seen.has(entry.conversationKey)) {
+    if (typeof entry.conversationKey !== "string" || !/^[a-f0-9]{64}$/.test(entry.conversationKey) || typeof entry.workspaceId !== "string" || entry.workspaceId.length === 0 || typeof entry.createdAt !== "string" || value.version === 2 && typeof entry.updatedAt !== "string" || seen.has(entry.conversationKey)) {
       throw new ConversationBindingError("CONVERSATION_BINDINGS_CORRUPT", "Conversation binding store contains an invalid entry.");
     }
     seen.add(entry.conversationKey);
     bindings.push({
       conversationKey: entry.conversationKey,
       workspaceId: entry.workspaceId,
-      createdAt: entry.createdAt
+      createdAt: entry.createdAt,
+      updatedAt: value.version === 1 ? entry.createdAt : entry.updatedAt
     });
   }
-  return { version: 1, bindings };
+  return { state: { version: 2, bindings }, needsMigration: value.version === 1 };
 }
 var ConversationBindingStore = class {
   file;
@@ -35956,29 +36197,20 @@ var ConversationBindingStore = class {
   constructor(opts = {}) {
     this.file = path3.resolve(opts.file ?? defaultBindingsFile());
     const persisted = readPersisted(this.file);
-    for (const binding of persisted?.bindings ?? []) this.bindings.set(binding.conversationKey, binding);
+    if (persisted?.needsMigration) {
+      try {
+        writeSecureJsonAtomic(this.file, persisted.state);
+      } catch (error2) {
+        throw new ConversationBindingError(
+          "CONVERSATION_BINDINGS_CORRUPT",
+          `Conversation binding migration failed; the original state was preserved: ${error2 instanceof Error ? error2.message : String(error2)}`
+        );
+      }
+    }
+    for (const binding of persisted?.state.bindings ?? []) this.bindings.set(binding.conversationKey, binding);
   }
   save(bindings) {
-    const temporary = `${this.file}.${process.pid}.${randomBytes5(8).toString("hex")}.tmp`;
-    try {
-      ensureDir(path3.dirname(this.file));
-      fs3.writeFileSync(
-        temporary,
-        JSON.stringify({ version: 1, bindings }, null, 2),
-        { mode: 384 }
-      );
-      try {
-        fs3.chmodSync(temporary, 384);
-      } catch {
-      }
-      fs3.renameSync(temporary, this.file);
-    } catch (error2) {
-      try {
-        fs3.rmSync(temporary, { force: true });
-      } catch {
-      }
-      throw error2;
-    }
+    writeSecureJsonAtomic(this.file, { version: 2, bindings });
   }
   get(conversationKey2) {
     const binding = this.bindings.get(conversationKey2);
@@ -35992,8 +36224,27 @@ var ConversationBindingStore = class {
     if (this.bindings.has(conversationKey2)) {
       throw new ConversationBindingError("CONVERSATION_ALREADY_BOUND", "This ChatGPT conversation is already bound to a workspace.");
     }
-    const binding = { conversationKey: conversationKey2, workspaceId, createdAt: (/* @__PURE__ */ new Date()).toISOString() };
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const binding = { conversationKey: conversationKey2, workspaceId, createdAt: now, updatedAt: now };
     this.save([...this.bindings.values(), binding]);
+    this.bindings.set(conversationKey2, binding);
+    return { ...binding };
+  }
+  /**
+   * Atomically create or replace one conversation binding. The existing
+   * creation time is retained while every successful fresh bind updates the
+   * last explicit bind/rebind time.
+   */
+  set(conversationKey2, workspaceId) {
+    if (!/^[a-f0-9]{64}$/.test(conversationKey2) || !workspaceId) {
+      throw new ConversationBindingError("CONVERSATION_BINDINGS_CORRUPT", "Invalid conversation binding values.");
+    }
+    const current = this.bindings.get(conversationKey2);
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const binding = current ? { ...current, workspaceId, updatedAt: now } : { conversationKey: conversationKey2, workspaceId, createdAt: now, updatedAt: now };
+    const next = [...this.bindings.values()].filter((item) => item.conversationKey !== conversationKey2);
+    next.push(binding);
+    this.save(next);
     this.bindings.set(conversationKey2, binding);
     return { ...binding };
   }
@@ -36541,8 +36792,8 @@ var WorkspaceRegistry = class {
 
 // src/mcp/workspace-resolver.ts
 var WorkspaceResolutionError = class extends Error {
-  constructor(code, message) {
-    super(message);
+  constructor(code, message, options) {
+    super(message, options);
     this.code = code;
     this.name = "WorkspaceResolutionError";
   }
@@ -36604,35 +36855,15 @@ var WorkspaceResolver = class {
       throw mapDependencyError(error2);
     }
   }
-  /** Resolve a snapshot, binding once when an unbound conversation supplies a capability. */
+  /** Resolve a snapshot or explicitly create/replace a binding with a capability. */
   resolveSnapshot(context, bindCode) {
-    try {
-      const workspace = this.resolve(context);
-      if (bindCode) {
-        throw new WorkspaceResolutionError(
-          "WORKSPACE_ALREADY_BOUND",
-          "This ChatGPT conversation is already bound and cannot accept another binding capability."
-        );
-      }
-      this.logger?.info("Workspace binding already exists", { workspaceId: workspace.id });
-      return workspace;
-    } catch (error2) {
-      if (!(error2 instanceof WorkspaceResolutionError) || error2.code !== "WORKSPACE_NOT_BOUND") {
-        throw error2;
-      }
-      this.logger?.info("Workspace binding required", { bindCapabilitySupplied: Boolean(bindCode) });
-      if (!bindCode) throw error2;
-      return this.bind(context, bindCode).workspace;
-    }
+    if (bindCode) return this.bind(context, bindCode).workspace;
+    const workspace = this.resolve(context);
+    this.logger?.info("Workspace binding already exists", { workspaceId: workspace.id });
+    return workspace;
   }
   bind(context, code) {
     const key = this.conversationKey(context);
-    if (this.bindings.has(key)) {
-      throw new WorkspaceResolutionError(
-        "WORKSPACE_ALREADY_BOUND",
-        "This ChatGPT conversation is already bound and cannot be switched implicitly."
-      );
-    }
     const reserved = this.bindCodes.reserve(code);
     if (!reserved.ok) {
       throw bindCodeError(reserved.reason);
@@ -36645,7 +36876,7 @@ var WorkspaceResolver = class {
       throw mapDependencyError(error2);
     }
     try {
-      this.bindings.bind(key, reserved.workspaceId);
+      this.bindings.set(key, reserved.workspaceId);
     } catch (error2) {
       this.bindCodes.release(reserved);
       this.logger?.warn("Conversation binding persistence failed", {
@@ -36656,7 +36887,8 @@ var WorkspaceResolver = class {
       });
       throw new WorkspaceResolutionError(
         "CONVERSATION_BINDING_PERSIST_FAILED",
-        "ChatCodePlus could not save the conversation binding locally. Check the ChatCodePlus state directory permissions and available disk space, then start the task again from Codex."
+        "ChatCodePlus could not save the conversation binding locally. Check the ChatCodePlus state directory permissions and available disk space, then start the task again from Codex.",
+        { cause: error2 }
       );
     }
     this.bindCodes.commit(reserved);
@@ -53636,7 +53868,8 @@ var COMMON_DIRS = [
   "C:\\Program Files (x86)\\cloudflared",
   path10.join(getChatCodePlusPaths().tools, "cloudflared")
 ];
-function findBinary(name) {
+var cachedCloudflared;
+function findBinaryUncached(name) {
   const exe = process.platform === "win32" ? `${name}.exe` : name;
   try {
     const probe = spawnSync3(exe, ["--version"], { stdio: "ignore", timeout: 5e3, windowsHide: true });
@@ -53655,11 +53888,17 @@ function findBinary(name) {
   }
   return null;
 }
+function findBinary(name) {
+  if (name === "cloudflared" && cachedCloudflared !== void 0) return cachedCloudflared;
+  const result = findBinaryUncached(name);
+  if (name === "cloudflared") cachedCloudflared = result;
+  return result;
+}
 function detectTunnelBinaries() {
-  return {
-    cloudflared: findBinary("cloudflared"),
-    wrangler: findBinary("wrangler")
-  };
+  return { cloudflared: findBinary("cloudflared") };
+}
+function resetTunnelBinaryDetection() {
+  cachedCloudflared = void 0;
 }
 
 // src/tunnel/cloudflared.ts
@@ -54709,6 +54948,10 @@ function cliEntry() {
   return { cmd: process.execPath, args: ["--import", "tsx/esm", path13.join(projectRoot, "src", "cli", "index.ts")] };
 }
 var START_LOCK_MAX_AGE_MS = 6e4;
+var STARTUP_POLL_DELAYS_MS = [50, 100, 150, 250, 300];
+function startupPollDelay(attempt) {
+  return STARTUP_POLL_DELAYS_MS[Math.min(attempt, STARTUP_POLL_DELAYS_MS.length - 1)];
+}
 function startLockFile() {
   return path13.join(ensureDir(getChatCodePlusPaths().gateway), "start.lock");
 }
@@ -54740,6 +54983,7 @@ function releaseStartLock(lock) {
 }
 async function ensureGateway(opts = {}) {
   const waitDeadline = Date.now() + 2e4;
+  let waitAttempt = 0;
   for (; ; ) {
     const live = await findLiveGateway();
     if (live) return { runtime: live, spawned: false };
@@ -54748,7 +54992,7 @@ async function ensureGateway(opts = {}) {
       if (Date.now() >= waitDeadline) {
         throw new Error("Another Gateway startup did not become healthy within 20s.");
       }
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, startupPollDelay(waitAttempt++)));
       continue;
     }
     try {
@@ -54768,8 +55012,9 @@ async function ensureGateway(opts = {}) {
       child.unref();
       fs13.closeSync(out);
       const deadline = Date.now() + 2e4;
+      let probeAttempt = 0;
       while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await new Promise((resolve) => setTimeout(resolve, startupPollDelay(probeAttempt++)));
         const runtime = await findLiveGateway();
         if (runtime) return { runtime, spawned: true };
         if (child.exitCode !== null && child.exitCode !== 0) {
@@ -55202,12 +55447,10 @@ async function readGatewayStatus() {
 async function ensureGatewayAndTunnel(workspace, opts = { tunnel: false }) {
   const connectionMode = readConnectionMode();
   const { runtime } = await ensureGateway();
-  if (workspace) {
-    await adminFetch(runtime, "POST", "/admin/workspaces/register", 6e4, {
-      root: workspace.root,
-      name: workspace.name
-    });
-  }
+  const workspaceRegistration = workspace ? await adminFetch(runtime, "POST", "/admin/workspaces/register", 6e4, {
+    root: workspace.root,
+    name: workspace.name
+  }) : null;
   let info = await adminFetch(runtime, "GET", "/admin/info");
   let mcpUrl = info.publicUrl ? `${info.publicUrl}/mcp` : null;
   if (opts.tunnel && !info.publicUrl && connectionMode !== "unconfigured") {
@@ -55219,10 +55462,19 @@ async function ensureGatewayAndTunnel(workspace, opts = { tunnel: false }) {
     }
     const result = await adminFetch(runtime, "POST", "/admin/tunnel/start", 9e4);
     if (!result.url) throw new Error(result.message ?? "Tunnel start failed");
-    info = await adminFetch(runtime, "GET", "/admin/info");
+    info = {
+      ...info,
+      publicUrl: result.url,
+      tunnel: {
+        ...info.tunnel,
+        running: true,
+        url: result.url,
+        connection: "connected"
+      }
+    };
     mcpUrl = `${result.url}/mcp`;
   }
-  return { runtime, info, mcpUrl, connectionMode };
+  return { runtime, info, mcpUrl, connectionMode, workspaceRegistration };
 }
 async function applyTunnelCandidate(candidate) {
   const { runtime } = await ensureGateway();
@@ -55272,6 +55524,7 @@ program2.command("bootstrap").description("Check or install user-scoped ChatCode
     const result = spawnSync5(command, args, { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     const stdout = (result.stdout ?? "").trim();
     if (result.status !== 0) throw new Error((result.stderr ?? stdout).trim() || "Bootstrap failed");
+    if (opts.install) resetTunnelBinaryDetection();
     if (opts.json) say(stdout);
     else {
       const data = JSON.parse(stdout);
@@ -55938,6 +56191,107 @@ function emitUpdateCheck(data, json3) {
 program2.command("update-check").description("Check GitHub for a newer version (real check at most once per local day)").option("--force", "check even if already checked today", false).option("--json", "machine-readable output", false).action((opts) => {
   emitUpdateCheck(checkForUpdate(opts.force), opts.json);
 });
+var CHATGPT_CONVERSATION_HOSTS = /* @__PURE__ */ new Set(["chatgpt.com", "chat.openai.com"]);
+var SAVED_SESSION_STATES = /* @__PURE__ */ new Set([
+  "INIT",
+  "PLAN",
+  "EXECUTING",
+  "EXECUTED",
+  "REVIEW",
+  "RESUME",
+  "DONE",
+  "BLOCKED",
+  "ERROR"
+]);
+var SavedSessionInputError = class extends Error {
+  code = "INVALID_SAVED_SESSION";
+};
+function normalizeChatGPTConversationUrl(value) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new SavedSessionInputError("ChatGPT conversation URL is required.");
+  }
+  let parsed;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    throw new SavedSessionInputError("ChatGPT conversation URL is invalid.");
+  }
+  const hostname2 = parsed.hostname.toLowerCase();
+  if (parsed.protocol !== "https:" || !CHATGPT_CONVERSATION_HOSTS.has(hostname2) || parsed.username !== "" || parsed.password !== "" || parsed.port !== "" && parsed.port !== "443") {
+    throw new SavedSessionInputError("ChatGPT conversation URL must use HTTPS and an approved ChatGPT host.");
+  }
+  const pathname = parsed.pathname.replace(/\/+$/, "");
+  if (!/^\/c\/[^/]+$/.test(pathname)) {
+    throw new SavedSessionInputError("ChatGPT conversation URL must identify a /c/<conversation> conversation.");
+  }
+  return `https://${hostname2}${pathname}`;
+}
+function optionalString(value, field) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "string") {
+    throw new SavedSessionInputError(`Saved session ${field} must be a string.`);
+  }
+  return value;
+}
+function optionalNonEmptyString(value, field) {
+  const stringValue = optionalString(value, field);
+  if (stringValue !== void 0 && stringValue.trim() === "") {
+    throw new SavedSessionInputError(`Saved session ${field} must be a non-empty string.`);
+  }
+  return stringValue;
+}
+function parseSessionIteration(value) {
+  if (!/^(0|[1-9]\d*)$/.test(value)) {
+    throw new SavedSessionInputError("Saved session iteration must be a non-negative integer.");
+  }
+  const iteration = Number(value);
+  if (!Number.isSafeInteger(iteration) || iteration < 0) {
+    throw new SavedSessionInputError("Saved session iteration must be a non-negative integer.");
+  }
+  return iteration;
+}
+function parseSessionState(value) {
+  const state = optionalNonEmptyString(value, "lastState");
+  if (!state || !SAVED_SESSION_STATES.has(state)) {
+    throw new SavedSessionInputError(`Saved session lastState is unsupported: ${value}.`);
+  }
+  return state;
+}
+function parseSavedSession(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new SavedSessionInputError("Saved session must be an object.");
+  }
+  const record2 = value;
+  const url = normalizeChatGPTConversationUrl(record2.url);
+  const title = optionalString(record2.title, "title");
+  const taskId = optionalNonEmptyString(record2.taskId, "taskId");
+  const lastState = optionalNonEmptyString(record2.lastState, "lastState");
+  if (lastState !== void 0 && !SAVED_SESSION_STATES.has(lastState)) {
+    throw new SavedSessionInputError(`Saved session lastState is unsupported: ${lastState}.`);
+  }
+  let iteration;
+  if (record2.iteration !== void 0) {
+    if (typeof record2.iteration !== "number" || !Number.isSafeInteger(record2.iteration) || record2.iteration < 0) {
+      throw new SavedSessionInputError("Saved session iteration must be a non-negative integer.");
+    }
+    iteration = record2.iteration;
+  }
+  let savedAt;
+  if (record2.savedAt !== void 0) {
+    if (typeof record2.savedAt !== "string" || record2.savedAt.trim() === "" || Number.isNaN(Date.parse(record2.savedAt))) {
+      throw new SavedSessionInputError("Saved session savedAt must be a valid date string.");
+    }
+    savedAt = record2.savedAt;
+  }
+  return {
+    url,
+    ...title !== void 0 ? { title } : {},
+    ...taskId !== void 0 ? { taskId } : {},
+    ...iteration !== void 0 ? { iteration } : {},
+    ...lastState !== void 0 ? { lastState } : {},
+    ...savedAt !== void 0 ? { savedAt } : {}
+  };
+}
 function sessionFile(workspaceId, createDir = true) {
   const dir = getChatCodePlusPaths().workspaceSessions;
   if (createDir) ensureDir(dir);
@@ -55945,14 +56299,26 @@ function sessionFile(workspaceId, createDir = true) {
 }
 function readSavedSession(workspaceId) {
   const file = sessionFile(workspaceId, false);
-  return fs17.existsSync(file) ? JSON.parse(fs17.readFileSync(file, "utf8")) : null;
+  if (!fs17.existsSync(file)) return { session: null, warning: null };
+  try {
+    return { session: parseSavedSession(JSON.parse(fs17.readFileSync(file, "utf8"))), warning: null };
+  } catch {
+    return {
+      session: null,
+      warning: "Saved ChatGPT session is unreadable or invalid and was ignored."
+    };
+  }
 }
 var session = program2.command("session").description("Remember and reuse the ChatGPT conversation for this workspace");
 session.command("get", { isDefault: true }).description("Show the saved ChatGPT conversation for this workspace").option("-w, --workspace <path>").option("--json", "machine-readable output", false).action((opts) => {
   const workspace = new Workspace(resolveWorkspace2(opts.workspace));
-  const saved = readSavedSession(workspace.id);
-  if (opts.json) say(JSON.stringify({ ok: true, session: saved }));
-  else if (!saved) say("\u5C1A\u672A\u8BB0\u5F55 ChatGPT \u4F1A\u8BDD\u3002");
+  const savedRead = readSavedSession(workspace.id);
+  const saved = savedRead.session;
+  if (opts.json) say(JSON.stringify({ ok: true, session: saved, sessionWarning: savedRead.warning }));
+  else if (savedRead.warning) {
+    say(`! ${savedRead.warning}`);
+    say("\u5C1A\u672A\u8BB0\u5F55 ChatGPT \u4F1A\u8BDD\u3002");
+  } else if (!saved) say("\u5C1A\u672A\u8BB0\u5F55 ChatGPT \u4F1A\u8BDD\u3002");
   else {
     say(`\u4F1A\u8BDD\uFF1A${saved.title ?? "(untitled)"}`);
     say(`\u5730\u5740\uFF1A${saved.url}`);
@@ -55962,16 +56328,29 @@ session.command("get", { isDefault: true }).description("Show the saved ChatGPT 
 session.command("set").description("Save the ChatGPT conversation to reuse in later tasks").option("-w, --workspace <path>").requiredOption("--url <url>", "conversation URL as shown in the browser address bar").option("--title <title>").option("--task <id>").option("--iteration <n>").option("--state <state>", "last protocol state, e.g. EXECUTED").action((opts) => {
   const workspace = new Workspace(resolveWorkspace2(opts.workspace));
   const file = sessionFile(workspace.id);
-  const previous = readSavedSession(workspace.id);
+  const url = normalizeChatGPTConversationUrl(opts.url);
+  const title = opts.title === void 0 ? void 0 : optionalNonEmptyString(opts.title, "title");
+  const taskId = opts.task === void 0 ? void 0 : optionalNonEmptyString(opts.task, "taskId");
+  const iteration = opts.iteration === void 0 ? void 0 : parseSessionIteration(opts.iteration);
+  const lastState = opts.state === void 0 ? void 0 : parseSessionState(opts.state);
+  const previous = readSavedSession(workspace.id).session;
+  const sameConversation = previous?.url === url;
   const saved = {
-    url: opts.url,
-    title: opts.title ?? previous?.title,
-    taskId: opts.task ?? previous?.taskId,
-    iteration: opts.iteration ? parseInt(opts.iteration, 10) : previous?.iteration,
-    lastState: opts.state ?? previous?.lastState,
-    savedAt: (/* @__PURE__ */ new Date()).toISOString()
+    url,
+    savedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    ...sameConversation ? {
+      title: title ?? previous?.title,
+      taskId: taskId ?? previous?.taskId,
+      iteration: iteration ?? previous?.iteration,
+      lastState: lastState ?? previous?.lastState
+    } : {
+      ...title !== void 0 ? { title } : {},
+      ...taskId !== void 0 ? { taskId } : {},
+      ...iteration !== void 0 ? { iteration } : {},
+      ...lastState !== void 0 ? { lastState } : {}
+    }
   };
-  writeSecureJson(file, saved);
+  writeSecureJsonAtomic(file, saved);
   check2("\u5DF2\u8BB0\u5F55 ChatGPT \u4F1A\u8BDD\uFF0C\u540E\u7EED\u4EFB\u52A1\u5C06\u590D\u7528");
 });
 session.command("clear").description("Forget the saved conversation (a new chat will be created next time)").option("-w, --workspace <path>").action((opts) => {
@@ -55982,14 +56361,11 @@ session.command("clear").description("Forget the saved conversation (a new chat 
 program2.command("preflight", { hidden: true }).description("Ensure Gateway and workspace registration, then read connection and saved-session state").option("-w, --workspace <path>").option("--json", "machine-readable output", false).action(async (opts) => {
   try {
     const workspace = new Workspace(resolveWorkspace2(opts.workspace));
-    const { runtime, info } = await ensureGatewayAndTunnel(workspace);
+    const { info, workspaceRegistration } = await ensureGatewayAndTunnel(workspace);
     const connection = { ok: true, running: true, ...info };
-    const registered = (await adminFetch(
-      runtime,
-      "GET",
-      "/admin/workspaces"
-    )).workspaces.some((item) => item.id === workspace.id);
-    const saved = readSavedSession(workspace.id);
+    const registered = workspaceRegistration?.id === workspace.id;
+    const savedRead = readSavedSession(workspace.id);
+    const saved = savedRead.session;
     const authorizationReady = authorizationIsUsable(connection.authorization);
     if (!authorizationReady) {
       const action = connection.authorization.state === "corrupt" ? "\u4FDD\u7559\u73B0\u6709\u6388\u6743\u6587\u4EF6\uFF0C\u8FD0\u884C doctor --no-fix \u786E\u8BA4\u4FEE\u590D\u52A8\u4F5C\u3002" : connection.authorization.state === "reauthorization_required" ? "\u5728 ChatGPT \u4E2D\u6253\u5F00\u73B0\u6709 ChatCodePlus \u8FDE\u63A5\u5668\uFF0C\u9009\u62E9 Reconnect / Authorize\u3002" : "\u5728 ChatGPT \u4E2D\u5B8C\u6210 ChatCodePlus Connector OAuth \u6388\u6743\u3002";
@@ -56006,6 +56382,7 @@ program2.command("preflight", { hidden: true }).description("Ensure Gateway and 
           registered,
           workspaceId: workspace.id,
           session: saved,
+          sessionWarning: savedRead.warning,
           authorizationReady: false,
           workspaceBindCode: null,
           workspaceBindCodeExpiresAt: null,
@@ -56017,12 +56394,12 @@ program2.command("preflight", { hidden: true }).description("Ensure Gateway and 
         check2(`Gateway\uFF1A\u8FD0\u884C\u4E2D\uFF08\u7AEF\u53E3 ${connection.port}\uFF09`);
         check2(`Workspace\uFF1A${workspace.name}${registered ? "\uFF08\u5DF2\u6CE8\u518C\uFF09" : "\uFF08\u672A\u6CE8\u518C\uFF09"}`);
         say(`\xB7 ChatGPT \u6388\u6743\uFF1A${authorizationDisplay(connection.authorization)}`);
+        if (savedRead.warning) say(`! ${savedRead.warning}`);
         say(`\u4E0B\u4E00\u6B65\uFF1A${action}`);
       }
       process.exitCode = 1;
       return;
     }
-    const bindCapability = saved ? null : await issueWorkspaceBindCapability(runtime, workspace.id);
     if (opts.json) {
       say(JSON.stringify({
         ok: true,
@@ -56031,9 +56408,10 @@ program2.command("preflight", { hidden: true }).description("Ensure Gateway and 
         registered,
         workspaceId: workspace.id,
         session: saved,
+        sessionWarning: savedRead.warning,
         authorizationReady: true,
-        workspaceBindCode: bindCapability?.code ?? null,
-        workspaceBindCodeExpiresAt: bindCapability?.expiresAt ?? null
+        workspaceBindCode: null,
+        workspaceBindCodeExpiresAt: null
       }));
       return;
     }
@@ -56050,8 +56428,9 @@ program2.command("preflight", { hidden: true }).description("Ensure Gateway and 
     } else {
       cross("Gateway \u672A\u8FD0\u884C");
     }
+    if (savedRead.warning) say(`! ${savedRead.warning}`);
     say(`\xB7 \u5DF2\u4FDD\u5B58\u4F1A\u8BDD\uFF1A${saved ? "\u662F" : "\u5426"}`);
-    say(saved ? "\xB7 \u5DE5\u4F5C\u533A\u7ED1\u5B9A\uFF1A\u590D\u7528\u5DF2\u4FDD\u5B58\u4F1A\u8BDD\u7684\u6301\u4E45\u7ED1\u5B9A\uFF08\u672A\u751F\u6210\u65B0\u80FD\u529B\uFF09" : "\xB7 \u65B0\u4F1A\u8BDD\u5DE5\u4F5C\u533A\u7ED1\u5B9A\u80FD\u529B\uFF1A\u5DF2\u51C6\u5907");
+    say("\xB7 \u5DE5\u4F5C\u533A\u7ED1\u5B9A\uFF1A\u5F85\u5F53\u524D ChatGPT \u5BF9\u8BDD\u901A\u8FC7 workspace_snapshot() \u786E\u8BA4\uFF08\u672A\u751F\u6210\u65B0\u80FD\u529B\uFF09");
   } catch (error2) {
     handleCliError(error2, opts.json);
   }
