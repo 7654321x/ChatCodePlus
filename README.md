@@ -46,7 +46,7 @@ git clone https://github.com/7654321x/ChatCodePlus.git "${CODEX_HOME:-$HOME/.cod
 
 - 每位用户运行自己的本机 Gateway，并连接自己的 ChatGPT Connector。
 - 仓库不包含共享 OAuth token、Cloudflare 凭据、配对码或工作区绑定码。
-- ChatGPT 仅通过只读工具访问明确连接的工作区。
+- ChatGPT 通过独立 OAuth 权限和当前对话绑定访问工作区；文件写入与命令执行同时受 Gateway 模式和服务端策略约束。
 - 本机状态保存在 `~/.chatcodeplus`，不会写入被连接的项目仓库。
 
 首次配置中涉及登录、授权、验证码、双重验证或配对码提交时，仍由用户在对应页面完成。

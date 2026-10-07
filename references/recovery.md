@@ -1,107 +1,92 @@
 # Recovery and disconnect
 
-Use this reference only after an actual status, OAuth, Connector, binding, or
-MCP failure. Normal setup acknowledgements use setup.md's continuation route.
+Use this reference only after an actual status, OAuth, Connector, binding, MCP,
+Tunnel, or runtime failure. Setup owns normal startup and [protocol.md](protocol.md)
+owns wire/binding semantics.
 
 ```text
 OBSERVE → CLASSIFY → MINIMAL REPAIR → RETRY ORIGINAL FAILURE → VERIFY → STOP
 ```
 
-## Common recovery
+Preserve the first real error. Run `<chatcodeplus> status -w <workspace> --json`;
+use `doctor --no-fix --json` only when status cannot identify the boundary.
+Apply at most the one repair returned by the owner, retry the original action
+once, and stop when the smallest read verifies recovery.
 
-1. Preserve the first real error. Run `<chatcodeplus> status -w <workspace>
-   --json`; run `doctor --no-fix --json` only when status cannot identify the
-   failing boundary. Apply at most its single automatic repair, then retry the
-   original operation once.
-2. Keep failure classes separate:
-   - `Unauthorized`: reconnect/authorize the existing Connector.
-   - `WORKSPACE_NOT_BOUND`: OAuth works. Keep the same conversation, run
-     `<chatcodeplus> bind -w <workspace> --json`, send that fresh capability to
-     the same conversation, and retry `workspace_snapshot({ bind_code })`
-     exactly once. On success, continue with no code and stop recovery.
-   - expired/rejected bind capability: first retry a no-code snapshot in the
-     same conversation. Success reuses the binding; only `WORKSPACE_NOT_BOUND`
-     permits a fresh capability and one binding retry, with no fallback workspace.
-   - stale `workspace_snapshot` schema or missing ChatCodePlus tools: reconnect
-     the same Connector/URL; re-pair only if its authorization page asks.
-   - changed Quick Tunnel URL: update the existing Connector Server URL, reopen
-     the saved conversation, and retry without a bind code. Tunnel changes do
-     not clear or replace conversation bindings.
-   - unhealthy fixed connection: read `named-tunnel.md`; never replace it with a
-     Quick Tunnel automatically.
-3. Report success only after the original operation succeeds. Stop after the
-   smallest read verifies recovery.
+## Failure classes
 
-Pairing remains just-in-time: when the visible page requests it, run
-`<chatcodeplus> pair --json` directly. Do not precede it with setup, discovery,
-doctor, Tunnel restart, or workspace registration.
+- `Unauthorized`: reconnect or reauthorize the existing Connector. Do not
+  create a duplicate and do not generate pairing unless the page asks.
+- `WORKSPACE_NOT_BOUND`: OAuth and MCP transport are reachable. Keep the same
+  conversation, run `<chatcodeplus> bind -w <workspace> --json`, send the fresh
+  capability through the same conversation, and retry
+  `workspace_snapshot({ bind_code })` once. On success, continue without a
+  code. Never choose a fallback workspace.
+- Expired or rejected bind capability: first retry a no-code snapshot in the
+  same conversation. Only `WORKSPACE_NOT_BOUND` permits one fresh capability
+  and one binding retry.
+- Missing ChatCodePlus tools or a stale snapshot schema: reconnect the same
+  Connector and URL; reauthorize only if its page asks. A stale host schema is
+  not proof that the binding or workspace is gone.
+- A token is issued but ChatGPT reports a connection error before an
+  authenticated MCP request: treat it as Connector linked-account setup, not a
+  binding failure. Refresh the same Connector once after the runtime is
+  current; do not generate another pairing code automatically.
+- A stale linked-account entry: remove only that user-confirmed stale entry in
+  ChatGPT settings, then authorize the existing Connector once. Local valid
+  OAuth generations coexist; a later authorization does not invalidate them.
+- Changed temporary public URL: update or recreate the existing ChatCodePlus
+  Connector with the new `/mcp` URL, finish OAuth only if requested, and reopen
+  the saved conversation. Do not clear local registrations, sessions, or
+  bindings.
+- Unhealthy fixed public connection: an enabled Named Tunnel is supervised by
+  the machine Gateway. Brief public-health failures are tolerated; sustained
+  failures or an unexpected cloudflared exit trigger automatic verified restart
+  with bounded backoff. If it remains unhealthy after those retries, read
+  [named-tunnel.md](named-tunnel.md); never replace it with a Quick Tunnel
+  automatically.
 
-## Connector invocation
-
-ChatCodePlus does not require Chat mode or Work mode. Workspace binding depends
-on the current conversation's available ChatCodePlus tools and its canonical
-binding, not a ChatGPT UI mode. If tools are unavailable, report that capability
-failure; do not infer or ask for a UI-mode change.
-
-Browser preparation is a best-effort Skill-executor action using available host
-tools, not a wired CLI/browser pipeline. Follow SKILL.md's `READY`/`NOT_READY`/
-`UNKNOWN` handling without changing the binding/recovery path. Reuse `READY`
-within the same continuous workflow and recheck only after direct evidence of
-host/browser invalidation or an environment switch. Browser state
-is never evidence of a conversation binding.
-
-An active task at `PLAN`, `EXECUTING`, `EXECUTED`, or `REVIEW` uses the `RESUME` control
-message without preflight, `workspace_snapshot()`, INIT, or a bind capability.
-Enter recovery only on direct evidence of a new conversation, different
-workspace, `WORKSPACE_NOT_BOUND`, or binding failure.
-
-Manual per-conversation selection/enablement is allowed only when direct
-evidence shows the INIT could not invoke ChatCodePlus: tools are absent, schema
-is stale, the product explicitly requires enablement, or no
-`workspace_snapshot` call followed the INIT. Then inspect/enable the existing
-Connector and retry the same reuse INIT; use a capability-bearing new-binding
-INIT directly when the target workspace is selected, or use it after an
-explicit `WORKSPACE_NOT_BOUND` result on the no-capability fallback. Never make
-this normal onboarding, ask for a greeting, or create a duplicate Connector.
+`WORKSPACE_NOT_BOUND` is not an OAuth failure. A reception timeout or an
+unreadable host reply is not binding evidence and must not trigger binding
+recovery by itself.
 
 ## Network boundary
 
-Investigate network/proxy state only when the original failure identifies that
-path. For a fixed hostname or confirmed Windows Clash/Mihomo stack, use
-`named-tunnel.md`, the canonical owner of those rules. For another stack:
+Investigate proxy or network state only when the original failure identifies
+that path. Identify the active owner and its source configuration, make one
+minimal reversible change through the owner's supported mechanism, retry the
+original failure, and verify. If ownership or semantics are uncertain, stop
+with one manual action. Never guess paths, edit generated/subscription-managed
+output, disable TLS/security, change system routes, or create a relay.
 
-1. Identify the running network owner and its active source configuration.
-2. Modify only a confirmed, user-owned source using supported semantics.
-3. Make one reversible, minimal change; reload through the owner's mechanism.
-4. Retry the original failure and verify.
+## Long command diagnostics
 
-If ownership, source, policy, or semantics are uncertain, stop and give one
-manual action. Never guess paths, edit generated/subscription-managed output,
-disable TLS/security, change system DNS/routes, add a CA, use sudo/root, or
-create a relay/public port.
+If a long `run_command` appears stalled, inspect `~/.chatcodeplus/logs/gateway.log`
+and follow its opaque `executionId` across dispatch, queue, process, and monitor
+lifecycle events. Use queue position, PID, elapsed time, timeout/exit state,
+activity byte counts, and monitor phase to identify the boundary. These records
+do not include command arguments, workspace paths, stdout, or stderr content.
+Do not start another GPT/Connector request merely to obtain progress; the
+Gateway monitor reports status through the current MCP progress channel.
 
-## State and process recovery
+## State and process boundary
 
 Canonical state is `~/.chatcodeplus`. Legacy formats are one-time migration
-input only; preserve failed input and never keep an old-path fallback. Do not
-move, rewrite, or delete credentials as a read/repair side effect. Credential
-adoption must be explicit and transactional, with the source recoverable until
-commit.
+input only; preserve failed input and never keep an old-path runtime fallback.
+Do not move, rewrite, or delete credentials as a read/repair side effect.
 
 If a confirmed old Gateway serves the fixed hostname, stop it and restart this
-runtime once; do not create another per-workspace service or Tunnel. Existing
-bindings persist across that restart. If a saved conversation is confirmed to
-have disappeared, create a replacement conversation. When the target workspace
-is known, issue a fresh explicit capability and send a new-binding INIT directly;
-a preliminary no-capability check is not required. If no capability is
-available, send a no-capability check INIT and call `workspace_snapshot()`
-without a bind code first; success reuses its binding, while
-`WORKSPACE_NOT_BOUND` permits the bind command and a fresh new-binding INIT on
-that fallback path. Use protocol.md's reply reception contract; a timeout or
-unreadable reply is not a binding failure.
+runtime once; do not create a per-workspace service or second Tunnel. Existing
+bindings persist across restart. If a saved conversation is confirmed gone,
+create a replacement conversation and use the protocol's explicit target
+binding path. Do not infer loss from an unavailable browser or stale URL.
 
-## Disconnect
+## Pairing and disconnect
 
-Run `<chatcodeplus> unpair` to revoke this OS user's machine OAuth tokens. The
-user removes the Connector in ChatGPT Settings. Existing local conversation
-bindings remain unusable until a new authorization succeeds.
+When the visible OAuth page asks for a code, run `<chatcodeplus> pair --json`
+just in time, return it, and pause for the user to submit it. Do not precede
+pairing with setup, discovery, doctor, Tunnel restart, or registration.
+
+Run `<chatcodeplus> unpair` only for the user's explicit machine disconnect.
+The user removes the Connector in ChatGPT Settings. Existing local conversation
+bindings remain stored but cannot be used until a new authorization succeeds.

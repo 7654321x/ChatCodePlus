@@ -1,2 +1,5 @@
+# The source Skill is explicit-only when loaded from this repository. The
+# public plugin build intentionally flips this field to true because packaged
+# discovery is the plugin's invocation boundary; do not "fix" the difference.
 policy:
   allow_implicit_invocation: false
