@@ -1,27 +1,28 @@
 {
   "schemaVersion": 1,
   "product": "chatcodeplus",
-  "version": "2.1.31",
+  "version": "2.1.35",
   "minimumNodeMajor": 20,
   "managedNodeMajor": 22,
   "runtimeFile": "chatcodeplus.mjs",
-  "runtimeSha256": "058090a9856912d315d5ea2db7029267b2a6745df57cc1f0e9d408810b54d44e",
-  "sourceSha256": "e6003c7749da85b1e41eabb0a004549475878cda7f2d1d84a8e71175baba60f3",
+  "runtimeSha256": "aac3be3c319e6e3b7915fe8e0191f44257107580aa237339038fa42f469919c2",
+  "sourceSha256": "b5c172c277f962fa4f8eaceb2ff64527d60fffeab56cc342e801a4be04414548",
   "distributionInputs": {
     "scripts/benchmark-file-mutation.mjs": "892c92f77bc19d286edcb462fe592ed42d3a4e86d2e6a9eb00e5d80e7df14b61",
     "scripts/build-plugin-package.mjs": "1bfbd514b0c805a41c77b5d2e170b5772630db0761c44d2faad1c9b2a5712144",
     "scripts/build-skill-runtime.mjs": "ecb457373d410eb835d4961312ea536ffe4d1ac4e92a4d33661423cc00671241",
     "scripts/local-skill.mjs": "8e08e7c97e34796b069a65b73838385a41e9b3678335095d2a356796cd8931c1",
+    "scripts/report-workflow-timing.mjs": "ecd373e519368ad303f2d87f6bc70e1dc59166055b39eb54adbfe940b76a61c8",
     "scripts/skill-distribution-integrity.mjs": "1a469fe31155c34072d98f3ed61abe02524583c7a0d23a6a7882fd677edf63ca",
     "scripts/skill-implicit-policy.mjs": "d3b59647054dd0b3d1897ce617bb58827ea885a0e7af7033958f0fe990198069",
     "scripts/skill-runtime-integrity.mjs": "a853bc64eab0c504035e4254d27d55757046dc6e7fe5e423ca63f3fd1638752b",
     "scripts/skill-version-parity.mjs": "84e440a5a8858ee624ae177cbeeb027462aa90e923b8f49de347fcad4fdb3f5c",
     "scripts/verify-skill-runtime.mjs": "005f1b9720d2abc3171c25aff72907ef7d78188e29b3ffc4d269b4412b78fb98",
     "bin/chatcodeplus.js": "570c9ea79df6a420a3ef0382ade6acadc4d4d2ce1351406d12e146200439716f",
-    "plugins/chatcodeplus/.codex-plugin/plugin.json": "5bb7dbecfe45dc1faeb3a8846d3454ea19b3c2b1d3e6bb08ab16b5db1ad7d874",
+    "plugins/chatcodeplus/.codex-plugin/plugin.json": "5dd6f910db49804655cb66135af637205e1d91eace9ad12ce1fada7d5f995bd1",
     "plugins/chatcodeplus/hooks/hooks.json": "010fe412cb2de7760a0661cb6db4af85b6bc299e1d5b7595e48930d0cea3c842",
     ".agents/plugins/marketplace.json": "d8c89f46ae14aed1f659210d479b2fc3a46fb482046127d07d0716be271b208a"
   },
-  "distributionSha256": "7ddbec139f92ead36fe5ba1530342832024f0bf4218debc88a5642bfec2f7c0e",
-  "builtAt": "2026-10-07T06:19:48.592Z"
+  "distributionSha256": "bc7e47f31eff8e2988376ddaf176c4dcfe47aae5e51d67bb480fd50b2a7fa261",
+  "builtAt": "2026-10-08T05:23:15.967Z"
 }

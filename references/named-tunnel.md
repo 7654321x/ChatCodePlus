@@ -20,8 +20,8 @@ workspaces never own or switch it.
    add the flag silently.
 
 Provisioning is transactional: stage candidate credentials, start alongside the
-current provider, verify the hostname returns this Gateway service/version, then
-commit machine configuration and stop the old provider. On failure, retain the
+current provider, verify the hostname returns this Gateway service/version/instanceId,
+then commit machine configuration and stop the old provider. On failure, retain the
 old provider/configuration. Do not automatically delete any Cloudflare Tunnel or
 DNS route created before failure. `/mcp` belongs only in the Connector URL.
 

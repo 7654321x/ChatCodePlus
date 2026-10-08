@@ -120,6 +120,19 @@ legacy view. Otherwise request the narrow directory page, file range, search,
 Git status, or diff needed for the current question. Use pagination markers;
 do not request exact sizes or totals unless the task needs them.
 
+## Performance-aware modification loop
+
+Before modifying multiple files, resolve applicable project rules, identify the
+smallest required source ranges, and group exact replacements per file. Preserve
+SHA/atomic-write/verification boundaries; batch independent inspections rather
+than repeating broad workspace scans. Verify focused tests after the modification
+batch and run full regression once before completion. Use the existing Gateway
+MCP tool/command timing logs and the read-only local
+`scripts/report-workflow-timing.mjs` helper to find bottlenecks. The Gateway
+cannot measure model reasoning or user/network gaps, and must never present the
+time between two tool requests as AI thinking duration. See
+`docs/performance-workflow-timing.md` in the development checkout.
+
 ## User-visible progress
 
 For substantial multi-step review, investigation, debugging, architecture,

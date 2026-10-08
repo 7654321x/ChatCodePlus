@@ -1,6 +1,6 @@
 # ChatCodePlus
 
-ChatCodePlus 让 ChatGPT 负责规划和审阅，让 Codex 继续负责修改文件、运行命令、测试和 Git。
+ChatCodePlus 让 ChatGPT 规划、审阅，并通过授权的 MCP 工具读取、修改工作区文件和执行命令；Codex 同时负责本地执行、验证和连接维护。
 
 本仓库只包含由最新源码生成的可分发 Skill，不包含开发仓库中的 `src/`、`tests/`、构建配置或维护者凭据。
 

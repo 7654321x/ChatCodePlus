@@ -39,12 +39,14 @@ once, and stop when the smallest read verifies recovery.
   Connector with the new `/mcp` URL, finish OAuth only if requested, and reopen
   the saved conversation. Do not clear local registrations, sessions, or
   bindings.
-- Unhealthy fixed public connection: an enabled Named Tunnel is supervised by
-  the machine Gateway. Brief public-health failures are tolerated; sustained
-  failures or an unexpected cloudflared exit trigger automatic verified restart
-  with bounded backoff. If it remains unhealthy after those retries, read
-  [named-tunnel.md](named-tunnel.md); never replace it with a Quick Tunnel
-  automatically.
+- Unhealthy fixed public connection: cloudflared registration does not prove
+  origin reachability. After registration the Gateway retries public /health
+  for a bounded readiness period, retaining one Named Tunnel through transient
+  HTTP 502 rather than restarting it. Only a matching service/version/instanceId
+  publishes the URL. Persistent failures stay unpublished; the health supervisor
+  first retries verification in place, then performs a bounded restart if needed.
+  A 502 is not proof of DNS or identity mismatch. If recovery fails, inspect
+  [named-tunnel.md](named-tunnel.md); never fall back to Quick Tunnel.
 
 `WORKSPACE_NOT_BOUND` is not an OAuth failure. A reception timeout or an
 unreadable host reply is not binding evidence and must not trigger binding
@@ -74,6 +76,17 @@ Gateway monitor reports status through the current MCP progress channel.
 Canonical state is `~/.chatcodeplus`. Legacy formats are one-time migration
 input only; preserve failed input and never keep an old-path runtime fallback.
 Do not move, rewrite, or delete credentials as a read/repair side effect.
+
+Normal startup/reconnection owns stale-runtime recovery inside the machine
+startup lock. A valid unchanged runtime is backed up privately and removed only
+after independent confirmation that its PID is absent and its TCP port has no
+listener. Windows uses its TCP listener table, not a successful wildcard bind.
+Corrupt/unreadable records, reused/live PIDs, occupied ports, inspection errors
+and concurrent changes refuse startup without migration or state deletion.
+Recovery inherits recorded write/command modes unless explicitly overridden;
+only a previously published public connection is restored and identity-verified.
+Read-only discovery and stop never erase a record on failed health/identity.
+Do not manually delete runtime.json to work around a refusal: report the cause.
 
 If a confirmed old Gateway serves the fixed hostname, stop it and restart this
 runtime once; do not create a per-workspace service or second Tunnel. Existing
