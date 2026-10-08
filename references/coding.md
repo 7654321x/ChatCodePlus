@@ -61,7 +61,11 @@ no-capability binding check, and `WORKSPACE_NOT_BOUND` semantics.
 
 When a target workspace is explicitly selected for first binding, recovery, or
 an intentional switch, the bind command may issue one fresh capability just in
-time. When no capability is available and binding is unknown, the protocol's
+time. After readiness is confirmed and binding is authorized, use
+`<chatcodeplus> bind -w <workspace> --packet` to create the complete protocol
+INIT packet **once**; deliver the output unchanged through the authorized host
+rather than assembling the message with a model. `bind --json` remains supported.
+When no capability is available and binding is unknown, the protocol's
 no-capability check comes first; only its `WORKSPACE_NOT_BOUND` result permits
 issuing a capability on that fallback path. Never select a fallback workspace.
 

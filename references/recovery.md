@@ -11,17 +11,31 @@ OBSERVE → CLASSIFY → MINIMAL REPAIR → RETRY ORIGINAL FAILURE → VERIFY �
 Preserve the first real error. Run `<chatcodeplus> status -w <workspace> --json`;
 use `doctor --no-fix --json` only when status cannot identify the boundary.
 Apply at most the one repair returned by the owner, retry the original action
-once, and stop when the smallest read verifies recovery.
+once, and stop when the smallest read verifies recovery. A request to **stop**
+or **revoke** is not evidence of a connection failure; follow the user's explicit
+intent rather than invoking a recovery workflow.
+
+| Observed boundary | Minimal next action |
+| --- | --- |
+| Gateway healthy, Tunnel connected, OAuth usable | Keep using the existing Connector and saved/current conversation; verify binding only if unknown. No restart or new pairing. |
+| Gateway stopped, user wants to connect | After current Skill installation check, run `preflight -w <workspace> --json` or explicit `start`; canonical startup handles eligible stale-runtime recovery. |
+| Named Tunnel disconnected or public 502 | Read Tunnel state; allow bounded Gateway-owned recovery/verification. A transient 502 is not proof of DNS mismatch or OAuth loss; do not restart the Tunnel repeatedly. |
+| OAuth unauthorized or scope missing | Reconnect/authorize the **existing** Connector when the host requests it; generate pairing only if its OAuth page explicitly asks. |
+| MCP reports `WORKSPACE_NOT_BOUND` | Current conversation reached MCP but lacks binding; for the authorized selected workspace, issue exactly one fresh capability packet and perform the single binding check. |
+| Runtime uncertain, corrupt, PID/port conflict | Use `doctor --no-fix --json` and the canonical lock-protected recovery boundary. Stop if it cannot prove safety; never manually delete runtime state. |
+| Tools missing/stale host metadata, temporary public URL changed | Repair the existing Connector registration/URL through the user-authorized host flow; preserve Gateway OAuth, Trust and binding records. |
 
 ## Failure classes
 
 - `Unauthorized`: reconnect or reauthorize the existing Connector. Do not
   create a duplicate and do not generate pairing unless the page asks.
 - `WORKSPACE_NOT_BOUND`: OAuth and MCP transport are reachable. Keep the same
-  conversation, run `<chatcodeplus> bind -w <workspace> --json`, send the fresh
-  capability through the same conversation, and retry
-  `workspace_snapshot({ bind_code })` once. On success, continue without a
-  code. Never choose a fallback workspace.
+  conversation; for its explicitly selected target workspace, run
+  `<chatcodeplus> bind -w <workspace> --packet` **once**, deliver the generated
+  INIT verbatim via the authorized host, and run the snapshot plus single
+  self-check in that conversation. On success continue without another code.
+  `bind --json` remains the legacy structured code output, not a reason for
+  the model to reassemble the INIT. Never choose a fallback workspace.
 - Expired or rejected bind capability: first retry a no-code snapshot in the
   same conversation. Only `WORKSPACE_NOT_BOUND` permits one fresh capability
   and one binding retry.

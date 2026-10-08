@@ -11,45 +11,49 @@ description: >
 
 # ChatCodePlus
 
-ChatGPT plans and reviews through workspace-scoped MCP tools. Read access is
-always binding- and scope-gated; write and command tools are exposed only when
-the active Gateway mode enables them and the OAuth token carries the matching
-scope. Codex remains the local execution harness for delegated work, but when
-`write_file`, `edit_file`, `apply_patch`, or `run_command` are exposed ChatGPT may use those
-tools directly within their documented boundaries. Use only this package's
-launcher: Windows `pwsh -NoProfile -File <skill>/scripts/chatcodeplus.ps1`;
-macOS/Linux `sh <skill>/scripts/chatcodeplus.sh`. Pass `-w <workspace>` to
-workspace commands.
+ChatGPT plans and reviews through workspace-scoped MCP tools. Access is
+binding- and OAuth scope-gated; direct `write_file`, `edit_file`, `apply_patch`
+and `run_command` also require enabled Gateway modes. Codex remains the local
+execution harness for delegated work. Use the installed Skill launcher:
+Windows `pwsh -NoProfile -File <skill>/scripts/chatcodeplus.ps1`, or macOS/Linux
+`sh <skill>/scripts/chatcodeplus.sh`. Pass `-w <workspace>` where required.
+
+## First action — choose one route
+
+| Current situation | Immediate action |
+| --- | --- |
+| Codex/host creates a capability-bearing INIT for an explicitly selected workspace | After confirmed connection readiness and first-bind/switch authorization, run `<chatcodeplus> bind -w <workspace> --packet` **once** and send the packet unchanged through the authorized host. Do not reconstruct it with a model. |
+| ChatGPT receives INIT with `WORKSPACE_BIND_CODE` | Call `workspace_snapshot({"bind_code":"<provided code>"})` (default binding tier), verify `BOUND` and expected workspace, then call `workspace_self_check({})` exactly once. Report both results; no preflight, file reads or commands. |
+| ChatGPT receives a no-code `CHECK_BINDING` INIT | Call `workspace_snapshot({})` once; `BOUND` → one `workspace_self_check({})`; `WORKSPACE_NOT_BOUND` → report it to the host, which may issue a fresh code only for an explicitly selected target. |
+| Confirmed same-workflow `RESUME`, or `NEW_TASK` after `DONE` | Reuse the confirmed binding; skip preflight, snapshot, capability and self-check. |
+| User only asks whether the Gateway/connection is up | Run `<chatcodeplus> status --json` (read-only). Report actual Gateway version, OAuth and Tunnel state; never start, restart, pair or bind as a status-check side effect. |
+| User asks to connect or reuse an existing ChatGPT Connector | Run `<chatcodeplus> preflight -w <workspace> --json` once. Follow its `connectionRoute`: `REUSE` → reuse the saved/current conversation and check binding only if unknown; `RECOVERY` → follow its `nextAction`; `FIRST_SETUP` → [setup.md](references/setup.md). |
+| Actual disconnection or stale runtime | Read [recovery.md](references/recovery.md): `status --json` first, then `doctor --no-fix --json` only if the cause is unclear. Repair the observed layer once; do not recreate OAuth, binding or Tunnel for a transient failure. |
+| User explicitly requests starting a Gateway | Check/install the latest local Skill, then `<chatcodeplus> start -w <workspace> --json`; it reuses an existing healthy Gateway. Add `--tunnel` only when public connection was requested. Verify returned state, not merely exit code. |
+| User explicitly requests Gateway restart | Check current installed Skill first, then `<chatcodeplus> restart`; use `--tunnel` only when explicitly establishing the public connection. Verify afterward with `status --json`. Preserve existing modes, sessions, OAuth and bindings. |
+| User explicitly requests stopping the Gateway | Run `<chatcodeplus> stop`, not `unpair`. Do not revoke OAuth or clear bindings. |
+| User explicitly requests disconnecting/revoking machine authorization | Only then run `<chatcodeplus> unpair` and use [recovery.md](references/recovery.md) for the user-side Connector action. Never unpair to fix a network outage. |
+
+`status` is observation only; `preflight` may start/reuse the Gateway and
+register a workspace. `bind --packet` is opt-in; `bind --json` stays unchanged.
+Issue a five-minute capability just in time for an authorized first bind/switch,
+never from a saved URL or unknown binding alone. Do not repeat checks after a
+confirmed RESUME, retry blindly, or claim readiness from process status alone.
 
 ## Invariants
 
 - One OS user owns one machine Gateway, state root, and active public endpoint.
   The Gateway lifetime is machine-owned, not Codex-owned: closing or restarting
-  Codex must not stop an already-running connection. The packaged Windows Skill
-  launches the Gateway through a current-user Task Scheduler boundary so it does
-  not remain inside the Codex host process tree; macOS/Linux use a detached daemon.
-  Runtime diagnostics distinguish the immutable launch method from the current
-  Windows task-registration presence; the latter is a cached health observation,
-  not proof of how the already-running Gateway was originally launched.
-  Once a fixed Named Tunnel is enabled, the Gateway supervises its public health
-  and automatically restores sustained disconnects with bounded backoff; an
-  explicit tunnel stop disables recovery. Quick Tunnels are not silently
-  auto-restarted because their public URL changes. Long `run_command` work uses
-  one lazy Gateway-owned monitor Worker Thread only for task-state timing; it
-  never runs commands, reads workspace data, calls MCP, or requests GPT. The
-  Gateway thread renders its status directly through the current request's MCP
-  progress channel when available; monitoring itself still runs without a
-  progress token. Heavy commands are limited to one active child-process tree
-  with at most four FIFO waiters. Queue wait is bounded to the lesser of 120
-  seconds or the requested command timeout, and MCP cancellation removes queued
-  work or terminates the active process tree. The command path is correlated by one opaque
-  `executionId` across dispatch, queue, process, and monitor lifecycle logs;
-  those logs keep diagnostic metadata only and never copy command arguments,
-  workspace paths, stdout, or stderr content. Workspace child processes inherit
-  the user's normal environment with the `CHATCODEPLUS_*` control-plane
-  namespace removed before spawn.
-  All accessible workspaces are explicitly registered in that machine state;
-  ChatGPT never selects a filesystem root by sending a path or workspace ID.
+  Codex must not stop an already-running connection. Windows uses a current-user
+  Task Scheduler boundary; macOS/Linux detach the daemon. The Gateway owns
+  Named Tunnel recovery and verified readiness; Quick Tunnel URLs never change
+  silently. Heavy `run_command` uses a bounded process queue and one monitor
+  Worker that never calls GPT or MCP. Request-local progress does not create
+  another model round-trip. Logs correlate by opaque `executionId`, without
+  command arguments, workspace paths or output; child processes exclude the
+  `CHATCODEPLUS_*` control-plane environment. All accessible workspaces are
+  registered in that machine state; ChatGPT never selects a filesystem root
+  by sending a path or workspace ID.
 - One machine may retain multiple OAuth client registrations and token
   generations. Machine Trust is Gateway-level machine trust established by local pairing, not a trusted
   OpenAI account identity; client ID, browser, and token generation are not
@@ -137,17 +141,12 @@ scope must reauthorize and is never silently expanded.
 
 ## Browser and user boundaries
 
-Browser Ready is a host capability contract, not a production TypeScript or
-CLI pipeline: when available, make one lightweight readiness preparation per
-continuous workflow, reuse `READY`, request one open on `NOT_READY`, and warn
-and continue on `UNKNOWN`. It never proves or changes conversation binding;
-the host may be unable to provide it. Details belong to `coding.md`.
+Browser Ready is a best-effort host capability, not a production CLI/browser
+pipeline. Reuse `READY`, open once on `NOT_READY`, and warn on `UNKNOWN`;
+none prove a binding. See [coding.md](references/coding.md).
 
-Give one complete user-action packet for a continuous page task. Pause only at
-login, consent, CAPTCHA, 2FA, pairing-code entry, DNS, or another explicit
-security/confirmation boundary. For substantial multi-step workspace work,
-use concise progress in the user's current language at meaningful stage changes,
-important findings or failures, and final verification. Batch routine tool calls
-silently; if work continues for roughly 45–60 seconds without a visible update,
-send one short liveness update when possible. Never start another ChatGPT
-planning/review round-trip merely to report progress.
+Give one complete user-action packet. Pause at login, consent, CAPTCHA, 2FA,
+pairing entry, DNS or explicit confirmation boundaries. For substantial work,
+report meaningful stages in the user's language; issue a short liveness update
+around 45–60 seconds when possible. Do not create another GPT round-trip
+merely to emit progress.

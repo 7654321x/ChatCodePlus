@@ -234,7 +234,12 @@ INIT → PLAN → EXECUTING → EXECUTED → REVIEW → (PLAN | DONE | BLOCKED)
 RESUME → (PLAN | EXECUTING | REVIEW)
 ```
 
-Capability-bearing first binding or explicit workspace switch:
+Capability-bearing first binding or explicit workspace switch: the local host
+may generate this exact shape using `<chatcodeplus> bind -w <workspace> --packet`
+only after readiness and explicit target authorization. The command uses a
+single fresh capability, an independently generated task ID and a safely quoted
+expected workspace name; the packet must still be delivered through an authorized
+host action. Producing it does not prove binding. `bind --json` remains unchanged.
 
 ```text
 [CHATCODEPLUS]

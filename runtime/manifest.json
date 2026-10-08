@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "product": "chatcodeplus",
-  "version": "2.1.35",
+  "version": "2.1.37",
   "minimumNodeMajor": 20,
   "managedNodeMajor": 22,
   "runtimeFile": "chatcodeplus.mjs",
-  "runtimeSha256": "aac3be3c319e6e3b7915fe8e0191f44257107580aa237339038fa42f469919c2",
-  "sourceSha256": "b5c172c277f962fa4f8eaceb2ff64527d60fffeab56cc342e801a4be04414548",
+  "runtimeSha256": "532524f467cebba3d38dc4a3c34f8d2f7e592587201e183c9f5cc2b352dd74c3",
+  "sourceSha256": "3887a87254c23717ba2727096eb4aa8a3505836f5b428c4da6b4c8413f02fb9b",
   "distributionInputs": {
     "scripts/benchmark-file-mutation.mjs": "892c92f77bc19d286edcb462fe592ed42d3a4e86d2e6a9eb00e5d80e7df14b61",
     "scripts/build-plugin-package.mjs": "1bfbd514b0c805a41c77b5d2e170b5772630db0761c44d2faad1c9b2a5712144",
@@ -19,10 +19,10 @@
     "scripts/skill-version-parity.mjs": "84e440a5a8858ee624ae177cbeeb027462aa90e923b8f49de347fcad4fdb3f5c",
     "scripts/verify-skill-runtime.mjs": "005f1b9720d2abc3171c25aff72907ef7d78188e29b3ffc4d269b4412b78fb98",
     "bin/chatcodeplus.js": "570c9ea79df6a420a3ef0382ade6acadc4d4d2ce1351406d12e146200439716f",
-    "plugins/chatcodeplus/.codex-plugin/plugin.json": "5dd6f910db49804655cb66135af637205e1d91eace9ad12ce1fada7d5f995bd1",
+    "plugins/chatcodeplus/.codex-plugin/plugin.json": "479a04af87d446863a5d211d57e91a71fbc0d4d3d136c183d000afadf258c29e",
     "plugins/chatcodeplus/hooks/hooks.json": "010fe412cb2de7760a0661cb6db4af85b6bc299e1d5b7595e48930d0cea3c842",
     ".agents/plugins/marketplace.json": "d8c89f46ae14aed1f659210d479b2fc3a46fb482046127d07d0716be271b208a"
   },
-  "distributionSha256": "bc7e47f31eff8e2988376ddaf176c4dcfe47aae5e51d67bb480fd50b2a7fa261",
-  "builtAt": "2026-10-08T05:23:15.967Z"
+  "distributionSha256": "4c8c21a53feabf1426c3edb5300caa9098e7d368f0daee27e967c9d34029a651",
+  "builtAt": "2026-10-08T13:32:45.659Z"
 }

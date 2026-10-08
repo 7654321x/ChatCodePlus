@@ -5,6 +5,28 @@ continuation. Binding and control-message formats are canonical in
 [protocol.md](protocol.md); browser preparation is owned by
 [coding.md](coding.md). Do not copy those state machines here.
 
+## Quick local lifecycle selection
+
+- **Check only:** `<chatcodeplus> status --json` is read-only. A healthy result
+  needs no `start`, `restart`, OAuth, pairing, or new bind code.
+- **Connect/reuse:** `<chatcodeplus> preflight -w <workspace> --json` once;
+  it starts/reuses a machine Gateway and registers that selected workspace.
+  Consume `connectionRoute`/`nextAction`; do not reconstruct the state machine.
+- **Explicit start:** first verify/sync the installed local Skill; run
+  `<chatcodeplus> start -w <workspace> --json` (add `--tunnel` only when
+  publicly connecting). A healthy machine Gateway is reused.
+- **Explicit restart:** after installed-Skill verification run
+  `<chatcodeplus> restart`, then `status --json`. A plain restart preserves
+  live `writeMode`/`commandMode`; do not silently change them or reset OAuth,
+  session records, bindings, or Tunnel configuration.
+- **Explicit stop:** `<chatcodeplus> stop` stops the machine service but does
+  not mean OAuth revocation. Only an explicit machine authorization disconnect
+  uses `unpair`; see [recovery.md](recovery.md).
+
+This selection runs **after** Fast RESUME has been ruled out. Neither a Gateway
+PID nor a saved conversation URL proves the current ChatGPT conversation bound.
+If only status was requested, never use the mutating `preflight` entry.
+
 ## Connection entry
 
 Requests such as `启动连接`, `连接 ChatGPT`, `继续使用 ChatCodePlus`, and
@@ -29,7 +51,11 @@ structured `connectionRoute` and `nextAction`:
 - `FIRST_SETUP`: continue to the first-setup gate below. Do not infer it from
   an unknown or unavailable Connector observation.
 
-`preflight` does not generate a pairing code or workspace bind capability. A
+`preflight` does not generate a pairing code or workspace bind capability. When
+readiness is confirmed and a first bind or explicit workspace switch is authorized,
+`<chatcodeplus> bind -w <workspace> --packet` issues a fresh code and prints one
+complete INIT message for the authorized host to deliver. Do not generate this
+packet during an unknown-binding check or as a side effect of preflight. A
 saved session URL is routing metadata only and never proves binding. A changed
 temporary URL requires updating the existing Connector; it does not clear
 OAuth, saved sessions, registrations, or bindings. An unhealthy configured
